@@ -1,0 +1,31 @@
+# Envoy in front with HTTPS for your two domains; certbot keeps the
+# Let's Encrypt certificate fresh. Envoy reloads renewed certificates
+# without restarting.
+services:
+  envoy:
+    image: envoyproxy/envoy:v1.32.3
+    restart: unless-stopped
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+    environment: { ENVOY_UID: "101", ENVOY_GID: "101" } # owner of the TLS key
+    ports: ["${HTTP_PORT:-80}:8080", "${HTTPS_PORT:-443}:8443"]
+    volumes:
+      - ../data/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ../data/tls:/etc/envoy/tls
+    depends_on: [server, status-web, admin-web]
+
+  certbot:
+    image: certbot/certbot:v3.0.1
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/drix/renew.sh"]
+    environment:
+      DRIX_TLS: ${DRIX_TLS:-letsencrypt}
+      DOMAINS: "${DRIX_STATUS_DOMAIN} ${DRIX_ADMIN_DOMAIN}"
+      LE_EMAIL: ${DRIX_LE_EMAIL:-}
+      LE_STAGING: ${DRIX_LE_STAGING:-}
+    volumes:
+      - ./certbot:/drix:ro
+      - ../data/tls:/etc/envoy/tls
+      - letsencrypt:/etc/letsencrypt
+
+volumes:
+  letsencrypt:

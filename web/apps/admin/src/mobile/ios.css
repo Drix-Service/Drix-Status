@@ -1,0 +1,187 @@
+/*
+ * The Drix app's iPhone look. MobileApp adds `ios` to <html> while the app
+ * is open (so bottom sheets, which render in a portal, get it too) and
+ * removes it again, so the desktop admin is never affected.
+ */
+
+html.ios {
+  --ios-bg: #f2f2f7;
+  --ios-cell: #ffffff;
+  --ios-cell-press: #e5e5ea;
+  --ios-raised: #ffffff;
+  --ios-sep: rgba(60, 60, 67, 0.29);
+  --ios-label: #000000;
+  --ios-label2: rgba(60, 60, 67, 0.6);
+  --ios-label3: rgba(60, 60, 67, 0.3);
+  --ios-fill: rgba(118, 118, 128, 0.12);
+  --ios-thumb: #ffffff;
+  --ios-bar: rgba(249, 249, 249, 0.8);
+  --ios-green: #34c759;
+  --ios-orange: #ff9500;
+  --ios-red: #ff3b30;
+  --ios-indigo: #5856d6;
+  --ios-gray: #8e8e93;
+  --ios-tint: #000000;
+
+  /* Shared tokens, so existing components (status dots, charts) match. */
+  --background: var(--ios-bg);
+  --foreground: var(--ios-label);
+  --card: var(--ios-cell);
+  --muted: var(--ios-fill);
+  --muted-foreground: var(--ios-label2);
+  --border: var(--ios-sep);
+  --up: var(--ios-green);
+  --degraded: var(--ios-orange);
+  --down: var(--ios-red);
+  --maintenance: var(--ios-indigo);
+  --pending: var(--ios-gray);
+  --chart: var(--ios-label);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+  background: var(--ios-bg);
+  color-scheme: light;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+html.ios.dark {
+  --ios-bg: #000000;
+  --ios-cell: #1c1c1e;
+  --ios-cell-press: #2c2c2e;
+  --ios-raised: #2c2c2e;
+  --ios-sep: rgba(84, 84, 88, 0.6);
+  --ios-label: #ffffff;
+  --ios-label2: rgba(235, 235, 245, 0.6);
+  --ios-label3: rgba(235, 235, 245, 0.3);
+  --ios-fill: rgba(118, 118, 128, 0.24);
+  --ios-thumb: #636366;
+  --ios-bar: rgba(22, 22, 23, 0.8);
+  --ios-green: #30d158;
+  --ios-orange: #ff9f0a;
+  --ios-red: #ff453a;
+  --ios-indigo: #5e5ce6;
+  --ios-gray: #8e8e93;
+  --ios-tint: #ffffff;
+  color-scheme: dark;
+}
+
+html.ios body {
+  background: var(--ios-bg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Controls behave like native ones: no text selection, no callouts. */
+html.ios button,
+html.ios a,
+html.ios nav {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Hairline separators between cells, starting where the text starts. */
+.ios-cell {
+  position: relative;
+}
+.ios-cell + .ios-cell::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: var(--sep-inset, 16px);
+  height: 0.5px;
+  background: var(--ios-sep);
+}
+
+/* Push and pop between screens, like a navigation controller. */
+::view-transition-group(root) {
+  animation-duration: 0.38s;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+html[data-nav="push"]::view-transition-old(root) {
+  animation: 0.38s cubic-bezier(0.32, 0.72, 0, 1) both ios-out-left;
+}
+html[data-nav="push"]::view-transition-new(root) {
+  animation: 0.38s cubic-bezier(0.32, 0.72, 0, 1) both ios-in-right;
+}
+html[data-nav="pop"]::view-transition-old(root) {
+  animation: 0.38s cubic-bezier(0.32, 0.72, 0, 1) both ios-out-right;
+  z-index: 2;
+}
+html[data-nav="pop"]::view-transition-new(root) {
+  animation: 0.38s cubic-bezier(0.32, 0.72, 0, 1) both ios-in-left;
+}
+html[data-nav="tab"]::view-transition-old(root),
+html[data-nav="tab"]::view-transition-new(root) {
+  animation: none;
+}
+/* The tab bar stays put while screens slide. */
+.ios-tabbar {
+  view-transition-name: ios-tabbar;
+}
+::view-transition-old(ios-tabbar),
+::view-transition-new(ios-tabbar) {
+  animation: none;
+}
+
+@keyframes ios-in-right {
+  from { transform: translateX(100%); }
+}
+@keyframes ios-out-left {
+  to { transform: translateX(-30%); opacity: 0.6; }
+}
+@keyframes ios-out-right {
+  to { transform: translateX(100%); }
+}
+@keyframes ios-in-left {
+  from { transform: translateX(-30%); opacity: 0.6; }
+}
+
+@keyframes ios-sheet-in {
+  from { transform: translateY(100%); }
+}
+@keyframes ios-sheet-out {
+  to { transform: translateY(100%); }
+}
+.ios-sheet[data-state="open"] {
+  animation: ios-sheet-in 0.42s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.ios-sheet[data-state="closed"] {
+  animation: ios-sheet-out 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root),
+  .ios-sheet {
+    animation: none !important;
+  }
+}
+
+/* Sheets sit a level above the page: dark mode raises them to grey. */
+html.ios.dark .ios-sheet {
+  --ios-bg: #1c1c1e;
+  --ios-cell: #2c2c2e;
+  --ios-cell-press: #3a3a3c;
+  --ios-thumb: #636366;
+}
+
+/* Toasts look like iOS banners. */
+html.ios [data-sonner-toast] {
+  border: 0 !important;
+  border-radius: 16px !important;
+  background: var(--ios-bar) !important;
+  color: var(--ios-label) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 15px !important;
+  padding: 14px 16px !important;
+}
+html.ios [data-sonner-toast] [data-description] {
+  color: var(--ios-label2) !important;
+  font-size: 13px !important;
+}

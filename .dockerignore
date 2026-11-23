@@ -1,0 +1,9 @@
+# Keep the build context small: only sources are needed.
+.git
+**/node_modules
+web/dist
+bin
+data
+.logs
+.env
+*.log

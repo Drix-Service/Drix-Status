@@ -1,0 +1,13 @@
+@import "tailwindcss";
+@import "../../../packages/ui/src/styles/theme.css";
+@source "../../../packages/ui/src";
+@source "./";
+
+/* Chart colour: the accent when it's readable on this theme (set from the
+   page's accent in App.tsx), otherwise a neutral. */
+:root {
+  --chart: var(--chart-light, var(--brand));
+}
+:root.dark {
+  --chart: var(--chart-dark, var(--brand));
+}

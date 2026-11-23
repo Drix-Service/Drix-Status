@@ -1,0 +1,17 @@
+# Builds one of the two websites (APP=status or APP=admin) and serves it with
+# nginx, proxying /api to the main server. Build context: repository root.
+FROM node:24-alpine AS build
+RUN npm install -g pnpm@12
+WORKDIR /web
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web ./
+ARG APP=status
+RUN pnpm build:${APP}
+
+FROM nginx:1.27-alpine
+ARG APP=status
+ENV API_UPSTREAM=server:8080
+COPY --from=build /web/dist/${APP} /usr/share/nginx/html
+COPY deploy/nginx.conf.template /etc/nginx/templates/default.conf.template
+EXPOSE 80

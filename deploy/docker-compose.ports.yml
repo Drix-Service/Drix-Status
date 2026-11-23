@@ -1,0 +1,8 @@
+# Plain ports, no HTTPS: put your own proxy or load balancer in front.
+services:
+  server:
+    ports: ["${API_PORT:-8080}:8080"]
+  status-web:
+    ports: ["${STATUS_PORT:-3000}:80"]
+  admin-web:
+    ports: ["${ADMIN_PORT:-3001}:80"]

@@ -1,0 +1,69 @@
+# Drix Status, production. Managed by install.sh; combine with either
+# docker-compose.ports.yml (plain ports) or docker-compose.tls.yml (Envoy + HTTPS).
+#
+#   docker compose -p drix-prod --env-file .env \
+#     -f deploy/docker-compose.prod.yml -f deploy/docker-compose.tls.yml up -d
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: drix
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run install.sh}
+      POSTGRES_DB: drix
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drix"]
+      interval: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 30
+
+  server:
+    build: { context: .., dockerfile: deploy/Dockerfile.server }
+    image: drix/server:local
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://drix:${POSTGRES_PASSWORD}@postgres:5432/drix?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      SECRET_KEY: ${SECRET_KEY:?run install.sh}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      STATUS_URL: ${STATUS_URL:-}
+      ADMIN_URL: ${ADMIN_URL:-}
+      SMTP_URL: ${SMTP_URL:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      BACKUP_DIR: /backups
+    # Database backups land in /opt/drix/backups on the host.
+    volumes: ["../backups:/backups"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  status-web:
+    build: { context: .., dockerfile: deploy/Dockerfile.web, args: { APP: status } }
+    image: drix/status-web:local
+    restart: unless-stopped
+    environment: { API_UPSTREAM: "server:8080" }
+    depends_on: [server]
+
+  admin-web:
+    build: { context: .., dockerfile: deploy/Dockerfile.web, args: { APP: admin } }
+    image: drix/admin-web:local
+    restart: unless-stopped
+    environment: { API_UPSTREAM: "server:8080" }
+    depends_on: [server]
+
+volumes:
+  pgdata:
+  redisdata:

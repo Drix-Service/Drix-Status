@@ -1,0 +1,19 @@
+# build output
+/bin/
+web/dist/
+web/node_modules/
+
+# local config
+.env
+*.local
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# start.sh logs
+.logs/
+
+# install.sh data (TLS certificates)
+/data/

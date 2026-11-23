@@ -1,0 +1,82 @@
+# Drix Status
+#
+#   Dev infra only:   docker compose -f deploy/docker-compose.yml up -d postgres redis mailpit
+#   Full stack:       docker compose -f deploy/docker-compose.yml --profile full up -d --build
+#
+# The full profile runs the main server (API + both websites behind nginx)
+# plus one agent. Agents normally run on *other* machines — see README.
+
+name: drix
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: drix
+      POSTGRES_PASSWORD: drix
+      POSTGRES_DB: drix
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drix"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    ports: ["6379:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 20
+
+  # Catches all email in development: SMTP on :1025, inbox UI on :8025.
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["1025:1025", "8025:8025"]
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+
+  server:
+    profiles: [full]
+    build: { context: .., dockerfile: deploy/Dockerfile.server }
+    environment:
+      DATABASE_URL: postgres://drix:drix@postgres:5432/drix?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-please}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    ports: ["8080:8080"]
+
+  status-web:
+    profiles: [full]
+    build: { context: .., dockerfile: deploy/Dockerfile.web, args: { APP: status } }
+    environment: { API_UPSTREAM: "server:8080" }
+    depends_on: [server]
+    ports: ["3000:80"]
+
+  admin-web:
+    profiles: [full]
+    build: { context: .., dockerfile: deploy/Dockerfile.web, args: { APP: admin } }
+    environment: { API_UPSTREAM: "server:8080" }
+    depends_on: [server]
+    ports: ["3001:80"]
+
+  agent:
+    profiles: [full]
+    build: { context: .., dockerfile: deploy/Dockerfile.agent }
+    environment:
+      DRIX_SERVER_URL: http://server:8080
+      DRIX_AGENT_TOKEN: ${DRIX_AGENT_TOKEN:-}
+    depends_on: [server]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
