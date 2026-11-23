@@ -44,7 +44,7 @@
 set -Eeuo pipefail
 ORIG_ARGS=("$@")
 
-REPO_URL="${DRIX_REPO_URL:-https://github.com/24-ghost-the-killer/Drix-Status.git}"
+REPO_URL="${DRIX_REPO_URL:-https://github.com/Drix-Service/Drix-Status.git}"
 BRANCH="${DRIX_BRANCH:-main}"
 DIR="${DRIX_DIR:-/opt/drix}"
 PROJECT="${DRIX_PROJECT:-drix-prod}"
