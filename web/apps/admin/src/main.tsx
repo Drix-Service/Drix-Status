@@ -5,6 +5,7 @@ import { ThemeProvider } from "@drix/ui/lib/theme";
 import { ApiError } from "./api";
 import { App, MobileApp } from "./App";
 import { persistQueries } from "./lib/persist";
+import { isPhone, isPhonePath } from "./lib/device";
 import "./index.css";
 
 const qc = new QueryClient({
@@ -17,7 +18,8 @@ const qc = new QueryClient({
   },
 });
 
-const inPhoneApp = window.location.pathname === "/m" || window.location.pathname.startsWith("/m/");
+// Only phones get the phone app; elsewhere /m redirects to the full admin.
+const inPhoneApp = isPhonePath(window.location.pathname) && isPhone();
 
 // The phone app opens on its last known data, then refreshes.
 if (inPhoneApp) persistQueries(qc);

@@ -16,6 +16,7 @@ import { useCan } from "../lib/roles";
 import { ApiKeysSection } from "../components/ApiKeys";
 import { BackupsSection } from "../components/Backups";
 import { TwoFactorPanel } from "../components/TwoFactor";
+import { DeviceNotificationsSection } from "../components/DeviceNotifications";
 import { AutoIncidentsSection } from "../components/AutoIncidents";
 
 export default function SettingsPage() {
@@ -105,6 +106,9 @@ export default function SettingsPage() {
       </fieldset>
     </form>
     <div className="mt-6 grid gap-6">
+      <div id="notifications" className="scroll-mt-20">
+        <DeviceNotificationsSection Section={Section} />
+      </div>
       <div id="two-factor" className="scroll-mt-20">
         <Section title="Two-factor sign-in" description="Your own account. A passkey or an authenticator app keeps the admin safe even if your password leaks.">
           <TwoFactorPanel />

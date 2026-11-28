@@ -4,10 +4,10 @@
 # Docker already installed).
 #
 # Main system (server, status page, admin panel, database):
-#   curl -fsSL https://raw.githubusercontent.com/24-ghost-the-killer/Drix-Status/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/drix-studio/drix-status/main/install.sh | sudo bash
 #
 # A worker on another machine (token from Admin → Workers → Add worker):
-#   curl -fsSL https://raw.githubusercontent.com/24-ghost-the-killer/Drix-Status/main/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/drix-studio/drix-status/main/install.sh \
 #     | sudo bash -s -- worker --server https://status.example.com --token drx_...
 #
 # Commands:
@@ -16,14 +16,21 @@
 #   update             back up the database, pull the latest code and rebuild
 #   backup             back up the database now (to <dir>/backups)
 #   restore FILE       replace the database with a backup (asks first)
+#   renew-tls          renew the certificate from Drix's own CA (--tls local;
+#                      also runs weekly from cron)
 #   status | logs [service] | uninstall [--purge]
 #
 # Main options (each can also be an environment variable, shown in brackets):
 #   --status-domain D  [DRIX_STATUS_DOMAIN]  e.g. status.example.com
 #   --admin-domain D   [DRIX_ADMIN_DOMAIN]   e.g. admin.example.com
-#                      Leave both empty to serve on plain ports instead of HTTPS.
+#                      Leave both empty to serve on plain ports, or add
+#                      --tls local for HTTPS on the server's IP address.
 #   --email E          [DRIX_LE_EMAIL]       Let's Encrypt account email
-#   --tls MODE         [DRIX_TLS]            letsencrypt (default) | self-signed
+#   --tls MODE         [DRIX_TLS]            letsencrypt (default with domains) |
+#                                            local: Drix's own certificate authority,
+#                                            trusted once per device; works without
+#                                            domains (needed for push on phones)
+#                                            self-signed: same as local
 #   --staging                                Let's Encrypt staging (test) certificates
 #   --admin-email E    [ADMIN_EMAIL]         first admin account
 #   --admin-password P [ADMIN_PASSWORD]      generated when empty
@@ -40,11 +47,13 @@
 #   --project NAME     [DRIX_PROJECT]        docker compose project (default drix-prod)
 #   --skip-deps                              don't install packages or Docker
 #   --http-port/--https-port/--status-port/--admin-port/--api-port N
+#   --admin-https-port N                     admin panel HTTPS port with --tls local
+#                                            and no domains (default 8443)
 
 set -Eeuo pipefail
 ORIG_ARGS=("$@")
 
-REPO_URL="${DRIX_REPO_URL:-https://github.com/Drix-Service/Drix-Status.git}"
+REPO_URL="${DRIX_REPO_URL:-https://github.com/drix-studio/drix-status.git}"
 BRANCH="${DRIX_BRANCH:-main}"
 DIR="${DRIX_DIR:-/opt/drix}"
 PROJECT="${DRIX_PROJECT:-drix-prod}"
@@ -70,7 +79,7 @@ setopt() { printf -v "OPT_$1" '%s' "$2"; }
 need_arg() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    install | worker | update | backup | restore | status | logs | uninstall) CMD="$1" ;;
+    install | worker | update | backup | restore | renew-tls | status | logs | uninstall) CMD="$1" ;;
     --status-domain) need_arg "$@"; setopt DRIX_STATUS_DOMAIN "$2"; shift ;;
     --admin-domain) need_arg "$@"; setopt DRIX_ADMIN_DOMAIN "$2"; shift ;;
     --email) need_arg "$@"; setopt DRIX_LE_EMAIL "$2"; shift ;;
@@ -91,10 +100,11 @@ while [ $# -gt 0 ]; do
     --status-port) need_arg "$@"; setopt STATUS_PORT "$2"; shift ;;
     --admin-port) need_arg "$@"; setopt ADMIN_PORT "$2"; shift ;;
     --api-port) need_arg "$@"; setopt API_PORT "$2"; shift ;;
+    --admin-https-port) need_arg "$@"; setopt ADMIN_HTTPS_PORT "$2"; shift ;;
     --skip-deps) SKIP_DEPS=1 ;;
     --purge) PURGE=1 ;;
     -y | --yes) YES=1 ;;
-    -h | --help) sed -n '2,42p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || echo "See https://github.com/24-ghost-the-killer/Drix-Status"; exit 0 ;;
+    -h | --help) sed -n '2,51p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || echo "See https://github.com/drix-studio/drix-status"; exit 0 ;;
     *)
       if [ "$CMD" = "logs" ] && [ -z "$LOG_SERVICE" ]; then LOG_SERVICE="$1"
       elif [ "$CMD" = "restore" ] && [ -z "$RESTORE_FILE" ]; then RESTORE_FILE="$1"
@@ -128,6 +138,17 @@ ask() {
 }
 
 local_ips() { { hostname -I 2>/dev/null || true; } | tr -s ' ' ' '; }
+
+# host_addrs: this machine's own addresses, one per line, without Docker's and
+# other virtual bridges (they change as containers come and go).
+host_addrs() {
+  if have ip; then
+    ip -o addr show scope global 2>/dev/null |
+      awk '$2 !~ /^(docker|br-|veth|virbr|cni|flannel|cali|vxlan)/ { split($4, a, "/"); print a[1] }'
+  else
+    local_ips | tr ' ' '\n' | grep -v '^$' || true
+  fi
+}
 
 # The first build downloads Node, Go and the service images (a few GB).
 check_disk() {
@@ -180,9 +201,23 @@ load_env() {
 
 q() { printf "'%s'" "$1"; } # single-quote for .env (docker compose reads it literally)
 
+# HTTPS on the server's IP address, with a certificate from Drix's own CA.
+ip_tls() { [ -z "${DRIX_STATUS_DOMAIN:-}" ] && [ "${DRIX_TLS:-}" = local ]; }
+# Envoy runs in front: two domains, or the IP mode above.
+tls_on() { [ -n "${DRIX_STATUS_DOMAIN:-}" ] || ip_tls; }
+# Certificates made by Drix's own CA (not Let's Encrypt).
+own_ca() { case "${DRIX_TLS:-}" in local | self-signed) return 0 ;; esac; return 1; }
+
 dc() {
-  local files=(-f "$DIR/deploy/docker-compose.prod.yml")
-  if [ -n "${DRIX_STATUS_DOMAIN:-}" ]; then files+=(-f "$DIR/deploy/docker-compose.tls.yml"); else files+=(-f "$DIR/deploy/docker-compose.ports.yml"); fi
+  local d="$DIR/deploy" files=(-f "$DIR/deploy/docker-compose.prod.yml")
+  if [ -n "${DRIX_STATUS_DOMAIN:-}" ]; then
+    files+=(-f "$d/docker-compose.tls.yml")
+  elif ip_tls; then
+    # Plain ports stay (workers use the API port), Envoy adds HTTPS.
+    files+=(-f "$d/docker-compose.ports.yml" -f "$d/docker-compose.tls.yml" -f "$d/docker-compose.tls-ip.yml")
+  else
+    files+=(-f "$d/docker-compose.ports.yml")
+  fi
   docker compose -p "$PROJECT" --env-file "$ENV_FILE" "${files[@]}" "$@"
 }
 
@@ -255,6 +290,15 @@ fetch_code() {
   if [ -n "${DRIX_REEXEC:-}" ]; then return; fi # already fetched; now running the new installer
   step "Getting Drix Status ($BRANCH)"
   if [ -d "$DIR/.git" ]; then
+    # The project moved: installs cloned from an old address follow along.
+    local cur
+    cur="$(git -C "$DIR" remote get-url origin 2>/dev/null || true)"
+    case "${cur%.git}" in
+      https://github.com/24-ghost-the-killer/Drix-Status | https://github.com/Drix-Service/Drix-Status)
+        git -C "$DIR" remote set-url origin "$REPO_URL"
+        ok "The repository moved; now updating from $REPO_URL"
+        ;;
+    esac
     git -C "$DIR" fetch --quiet origin "$BRANCH"
     git -C "$DIR" checkout --quiet "$BRANCH"
     git -C "$DIR" reset --quiet --hard "origin/$BRANCH"
@@ -277,20 +321,35 @@ configure() {
   step "Configuration"
   load_env
   if [ -n "$STAGING_FLAG" ]; then DRIX_LE_STAGING=1; fi
-  echo "  Use your own domains for HTTPS (leave empty to use plain ports)."
+  echo "  Use your own domains for HTTPS (leave empty to use this server's IP address)."
   ask DRIX_STATUS_DOMAIN "Status page domain (e.g. status.example.com)" ""
   if [ -n "$DRIX_STATUS_DOMAIN" ]; then
     ask DRIX_ADMIN_DOMAIN "Admin panel domain (e.g. admin.example.com)" ""
     [ -n "$DRIX_ADMIN_DOMAIN" ] || die "An admin domain is needed too (both sites run on their own domain)."
     [ "$DRIX_STATUS_DOMAIN" != "$DRIX_ADMIN_DOMAIN" ] || die "Use two different domains for the status page and the admin panel."
-    ask DRIX_TLS "Certificates: letsencrypt or self-signed" "letsencrypt"
-    case "$DRIX_TLS" in letsencrypt | self-signed) ;; *) die "--tls must be letsencrypt or self-signed" ;; esac
+    ask DRIX_TLS "Certificates: letsencrypt or local (own CA)" "letsencrypt"
+    case "$DRIX_TLS" in letsencrypt | self-signed | local) ;; *) die "--tls must be letsencrypt or local" ;; esac
     if [ "$DRIX_TLS" = letsencrypt ]; then
       ask DRIX_LE_EMAIL "Email for Let's Encrypt (expiry warnings)" ""
-      [ -n "$DRIX_LE_EMAIL" ] || die "Let's Encrypt needs an email address (or use --tls self-signed)."
+      [ -n "$DRIX_LE_EMAIL" ] || die "Let's Encrypt needs an email address (or use --tls local)."
     fi
   else
     DRIX_ADMIN_DOMAIN=""
+    if [ -n "${OPT_DRIX_TLS+x}" ]; then DRIX_TLS="$OPT_DRIX_TLS"; fi
+    case "${DRIX_TLS:-}" in
+      local | self-signed) DRIX_TLS=local ;;
+      letsencrypt) die "Let's Encrypt needs domains. Without domains, use --tls local (HTTPS on this server's IP address)." ;;
+      *)
+        ask HTTPS_ON_IP "HTTPS on this server's IP address with its own certificate? Phones need it for push notifications (y/N)" "n"
+        case "$HTTPS_ON_IP" in [yY]*) DRIX_TLS=local ;; *) DRIX_TLS="" ;; esac
+        ;;
+    esac
+  fi
+  local host
+  host="$({ host_addrs | grep -v : || true; } | head -1)"
+  host="${host:-localhost}"
+  if ip_tls; then
+    ask DRIX_HTTPS_HOST "Address phones and browsers use to reach this server" "$host"
   fi
   ask ADMIN_EMAIL "Admin email (your login)" "admin@example.com"
   ask ADMIN_PASSWORD "Admin password (empty = generate)" "" secret
@@ -303,15 +362,13 @@ configure() {
   : "${POSTGRES_PASSWORD:=$(rand 32)}"
   : "${HTTP_PORT:=${OPT_HTTP_PORT:-80}}" "${HTTPS_PORT:=${OPT_HTTPS_PORT:-443}}"
   : "${STATUS_PORT:=${OPT_STATUS_PORT:-3000}}" "${ADMIN_PORT:=${OPT_ADMIN_PORT:-3001}}" "${API_PORT:=${OPT_API_PORT:-8080}}"
+  : "${ADMIN_HTTPS_PORT:=${OPT_ADMIN_HTTPS_PORT:-8443}}"
   local k o
-  for k in HTTP_PORT HTTPS_PORT STATUS_PORT ADMIN_PORT API_PORT; do
+  for k in HTTP_PORT HTTPS_PORT STATUS_PORT ADMIN_PORT API_PORT ADMIN_HTTPS_PORT; do
     o="OPT_$k"
     if [ -n "${!o+x}" ]; then printf -v "$k" '%s' "${!o}"; fi
   done
 
-  local host
-  host="$(local_ips | awk '{print $1}')"
-  host="${host:-localhost}"
   if [ -n "$DRIX_STATUS_DOMAIN" ]; then
     local hp=""
     if [ "$HTTPS_PORT" != 443 ]; then hp=":$HTTPS_PORT"; fi
@@ -319,6 +376,14 @@ configure() {
     ADMIN_URL="https://$DRIX_ADMIN_DOMAIN$hp"
     PUBLIC_URL="$STATUS_URL"
     COOKIE_SECURE=true
+  elif ip_tls; then
+    local hp=""
+    if [ "$HTTPS_PORT" != 443 ]; then hp=":$HTTPS_PORT"; fi
+    STATUS_URL="https://$DRIX_HTTPS_HOST$hp"
+    ADMIN_URL="https://$DRIX_HTTPS_HOST:$ADMIN_HTTPS_PORT"
+    # Workers keep the plain API port: they don't know Drix's own CA.
+    PUBLIC_URL="http://$DRIX_HTTPS_HOST:$API_PORT"
+    COOKIE_SECURE=false # the plain http ports still work too
   else
     STATUS_URL="http://$host:$STATUS_PORT"
     ADMIN_URL="http://$host:$ADMIN_PORT"
@@ -326,9 +391,9 @@ configure() {
     COOKIE_SECURE=false
   fi
 
-  ENV_KEYS="DRIX_STATUS_DOMAIN DRIX_ADMIN_DOMAIN DRIX_TLS DRIX_LE_EMAIL DRIX_LE_STAGING ADMIN_EMAIL ADMIN_PASSWORD
+  ENV_KEYS="DRIX_STATUS_DOMAIN DRIX_ADMIN_DOMAIN DRIX_TLS DRIX_LE_EMAIL DRIX_LE_STAGING DRIX_HTTPS_HOST ADMIN_EMAIL ADMIN_PASSWORD
     SECRET_KEY POSTGRES_PASSWORD SMTP_URL PUBLIC_URL STATUS_URL ADMIN_URL COOKIE_SECURE
-    HTTP_PORT HTTPS_PORT STATUS_PORT ADMIN_PORT API_PORT"
+    HTTP_PORT HTTPS_PORT STATUS_PORT ADMIN_PORT API_PORT ADMIN_HTTPS_PORT"
   for k in $ENV_KEYS; do
     case "${!k:-}" in *"'"*) die "$k can't contain a single quote (')." ;; esac
   done
@@ -367,10 +432,11 @@ check_dns() {
 setup_tls() {
   step "Setting up Envoy and HTTPS"
   mkdir -p "$DIR/data/tls"
-  local pr=""
+  local pr="" tmpl="$DIR/deploy/envoy/envoy.yaml.tmpl"
   if [ "$HTTPS_PORT" != 443 ]; then pr=", port_redirect: $HTTPS_PORT"; fi
-  sed -e "s/__STATUS_DOMAIN__/$DRIX_STATUS_DOMAIN/g" -e "s/__ADMIN_DOMAIN__/$DRIX_ADMIN_DOMAIN/g" -e "s/__PORT_REDIRECT__/$pr/" \
-    "$DIR/deploy/envoy/envoy.yaml.tmpl" >"$DIR/data/envoy.yaml.new"
+  if ip_tls; then tmpl="$DIR/deploy/envoy/envoy-ip.yaml.tmpl"; fi
+  sed -e "s/__STATUS_DOMAIN__/${DRIX_STATUS_DOMAIN:-}/g" -e "s/__ADMIN_DOMAIN__/${DRIX_ADMIN_DOMAIN:-}/g" -e "s/__PORT_REDIRECT__/$pr/" \
+    "$tmpl" >"$DIR/data/envoy.yaml.new"
   # Envoy reads its config at start; restart it after `up` when it changed.
   if ! cmp -s "$DIR/data/envoy.yaml.new" "$DIR/data/envoy.yaml" 2>/dev/null; then ENVOY_CHANGED=1; fi
   cat "$DIR/data/envoy.yaml.new" >"$DIR/data/envoy.yaml" # keep the inode: it's bind-mounted
@@ -383,39 +449,150 @@ resources:
       certificate_chain: { filename: /etc/envoy/tls/fullchain.pem }
       private_key: { filename: /etc/envoy/tls/privkey.pem }
 EOF
-  # A self-signed certificate lets Envoy start; Let's Encrypt replaces it.
-  # Made again only when missing or the domains changed (and not from Let's Encrypt).
-  local tls="$DIR/data/tls" want="$DRIX_STATUS_DOMAIN $DRIX_ADMIN_DOMAIN"
-  if [ ! -s "$tls/fullchain.pem" ] || { [ "$(cat "$tls/.domains" 2>/dev/null || true)" != "$want" ] &&
-    ! openssl x509 -in "$tls/fullchain.pem" -noout -issuer 2>/dev/null | grep -q "Let's Encrypt"; }; then
-    openssl req -x509 -newkey rsa:2048 -nodes -days 825 -subj "/CN=$DRIX_STATUS_DOMAIN" \
-      -addext "subjectAltName=DNS:$DRIX_STATUS_DOMAIN,DNS:$DRIX_ADMIN_DOMAIN" \
-      -keyout "$tls/privkey.pem.new" -out "$tls/fullchain.pem.new" >/dev/null 2>&1
-    mv -f "$tls/privkey.pem.new" "$tls/privkey.pem"
-    mv -f "$tls/fullchain.pem.new" "$tls/fullchain.pem"
-    echo "$want" >"$tls/.domains"
-    ok "Created a self-signed certificate for $DRIX_STATUS_DOMAIN and $DRIX_ADMIN_DOMAIN"
-  fi
-  # Envoy runs as a non-root user inside its container and must read the key.
-  # Envoy runs as uid 101 inside its container (ENVOY_UID) and must read the key.
-  chmod 755 "$DIR/data/tls"
-  chmod 644 "$DIR/data/tls/sds.yaml"
-  if chown 101:101 "$DIR/data/tls/privkey.pem" 2>/dev/null; then
-    chmod 600 "$DIR/data/tls/privkey.pem"
+  local tls="$DIR/data/tls"
+  if own_ca; then
+    local names
+    names="$(cert_names)"
+    if local_cert_needed "$names"; then issue_local_cert "$names"; fi
+    install_tls_renewal
   else
-    chmod 644 "$DIR/data/tls/privkey.pem" # not root (e.g. --skip-deps): fall back to readable
+    # A self-signed certificate lets Envoy start; Let's Encrypt replaces it.
+    # Made again only when missing or the domains changed (and not from Let's Encrypt).
+    local want="$DRIX_STATUS_DOMAIN $DRIX_ADMIN_DOMAIN"
+    if [ ! -s "$tls/fullchain.pem" ] || { [ "$(cat "$tls/.domains" 2>/dev/null || true)" != "$want" ] &&
+      ! openssl x509 -in "$tls/fullchain.pem" -noout -issuer 2>/dev/null | grep -q "Let's Encrypt"; }; then
+      openssl req -x509 -newkey rsa:2048 -nodes -days 825 -subj "/CN=$DRIX_STATUS_DOMAIN" \
+        -addext "subjectAltName=DNS:$DRIX_STATUS_DOMAIN,DNS:$DRIX_ADMIN_DOMAIN" \
+        -keyout "$tls/privkey.pem.new" -out "$tls/fullchain.pem.new" >/dev/null 2>&1
+      mv -f "$tls/privkey.pem.new" "$tls/privkey.pem"
+      mv -f "$tls/fullchain.pem.new" "$tls/fullchain.pem"
+      echo "$want" >"$tls/.domains"
+      ok "Created a temporary certificate for $DRIX_STATUS_DOMAIN and $DRIX_ADMIN_DOMAIN"
+    fi
   fi
-  if [ "$DRIX_TLS" = letsencrypt ]; then
+  fix_tls_perms
+  if [ "${DRIX_TLS:-}" = letsencrypt ]; then
     check_dns
     echo "  ${DIM}Let's Encrypt is used under its Subscriber Agreement: https://letsencrypt.org/repository/${N}"
     if [ -n "${DRIX_LE_STAGING:-}" ]; then warn "Using Let's Encrypt STAGING certificates (browsers won't trust them)."; fi
   else
-    warn "Using a self-signed certificate; browsers will warn until you switch to --tls letsencrypt."
+    ok "Devices trust it after installing $tls/ca.crt once (see the steps at the end)"
+  fi
+}
+
+# Envoy runs as uid 101 inside its container (ENVOY_UID) and must read the key
+# (but not the CA's key, which stays root-only).
+fix_tls_perms() {
+  local tls="$DIR/data/tls"
+  chmod 755 "$tls"
+  chmod 644 "$tls/sds.yaml" 2>/dev/null || true
+  [ -f "$tls/ca.crt" ] && chmod 644 "$tls/ca.crt"
+  [ -f "$tls/ca.key" ] && chmod 600 "$tls/ca.key"
+  if chown 101:101 "$tls/privkey.pem" 2>/dev/null; then
+    chmod 600 "$tls/privkey.pem"
+  else
+    chmod 644 "$tls/privkey.pem" # not root (e.g. --skip-deps): fall back to readable
+  fi
+}
+
+# cert_names: the certificate's subjectAltName list, sorted so it compares
+# stably. With domains: the two domains. On an IP address: every address of
+# this machine, its hostname and localhost, so any of them works.
+cert_names() {
+  if [ -n "${DRIX_STATUS_DOMAIN:-}" ]; then
+    printf 'DNS:%s\nDNS:%s\n' "$DRIX_STATUS_DOMAIN" "$DRIX_ADMIN_DOMAIN" | sort -u | paste -sd, -
+    return
+  fi
+  local a
+  {
+    echo "IP:127.0.0.1"
+    echo "DNS:localhost"
+    hostname 2>/dev/null | sed 's/^/DNS:/' || true
+    for a in ${DRIX_HTTPS_HOST:-} $(host_addrs); do
+      case "$a" in fe80:* | "") continue ;; esac
+      if printf '%s' "$a" | grep -qE '^[0-9.]+$|:'; then echo "IP:$a"; else echo "DNS:$a"; fi
+    done
+  } | sort -u | paste -sd, -
+}
+
+# local_cert_needed NAMES: true when the certificate is missing, was made for
+# other addresses, isn't from our CA, or expires within 60 days.
+local_cert_needed() {
+  local tls="$DIR/data/tls"
+  [ -s "$tls/ca.key" ] && [ -s "$tls/ca.crt" ] && [ -s "$tls/fullchain.pem" ] && [ -s "$tls/privkey.pem" ] || return 0
+  [ "$(cat "$tls/.names" 2>/dev/null || true)" = "$1" ] || return 0
+  openssl verify -CAfile "$tls/ca.crt" "$tls/fullchain.pem" >/dev/null 2>&1 || return 0
+  openssl x509 -in "$tls/fullchain.pem" -noout -checkend $((60 * 86400)) >/dev/null 2>&1 || return 0
+  return 1
+}
+
+# issue_local_cert NAMES: make Drix's certificate authority once (10 years;
+# devices trust it once), then a server certificate for NAMES (397 days, the
+# longest Apple devices accept, with the server-authentication usage iOS needs).
+issue_local_cert() {
+  local tls="$DIR/data/tls" tmp
+  if [ ! -s "$tls/ca.key" ] || [ ! -s "$tls/ca.crt" ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -sha256 \
+      -subj "/O=Drix Status/CN=Drix Status CA ($(hostname 2>/dev/null || echo server))" \
+      -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+      -addext "keyUsage=critical,keyCertSign,cRLSign" \
+      -addext "subjectKeyIdentifier=hash" \
+      -keyout "$tls/ca.key" -out "$tls/ca.crt" >/dev/null 2>&1 || die "Couldn't create the certificate authority (openssl)."
+    chmod 600 "$tls/ca.key"
+    chmod 644 "$tls/ca.crt"
+    ok "Created Drix's own certificate authority ($tls/ca.crt)"
+  fi
+  # Work inside the watched folder: a move within one file system is what
+  # makes Envoy reload (a move from /tmp may be a copy).
+  tmp="$(mktemp -d "$tls/.new.XXXXXX")"
+  printf '%s\n' "basicConstraints=critical,CA:FALSE" "keyUsage=critical,digitalSignature,keyEncipherment" \
+    "extendedKeyUsage=serverAuth" "subjectKeyIdentifier=hash" "authorityKeyIdentifier=keyid" \
+    "subjectAltName=$1" >"$tmp/ext"
+  openssl req -newkey rsa:2048 -nodes -subj "/O=Drix Status/CN=Drix Status" \
+    -keyout "$tmp/key" -out "$tmp/csr" >/dev/null 2>&1 &&
+    openssl x509 -req -in "$tmp/csr" -CA "$tls/ca.crt" -CAkey "$tls/ca.key" -sha256 -days 397 \
+      -set_serial "0x1$(openssl rand -hex 15)" -extfile "$tmp/ext" -out "$tmp/crt" >/dev/null 2>&1 ||
+    { rm -rf "$tmp"; die "Couldn't create the HTTPS certificate (openssl)."; }
+  cat "$tmp/crt" "$tls/ca.crt" >"$tmp/fullchain"
+  if chown 101:101 "$tmp/key" 2>/dev/null; then chmod 600 "$tmp/key"; else chmod 644 "$tmp/key"; fi
+  # Envoy reloads when sds.yaml is moved into place (like the Let's Encrypt hook).
+  mv -f "$tmp/fullchain" "$tls/fullchain.pem"
+  mv -f "$tmp/key" "$tls/privkey.pem"
+  if [ -f "$tls/sds.yaml" ]; then cp "$tls/sds.yaml" "$tmp/sds" && mv -f "$tmp/sds" "$tls/sds.yaml"; fi
+  echo "$1" >"$tls/.names"
+  rm -rf "$tmp"
+  fix_tls_perms
+  ok "HTTPS certificate valid until $(openssl x509 -in "$tls/fullchain.pem" -noout -enddate | cut -d= -f2)"
+}
+
+# Renew weekly from cron, so the certificate never lapses between updates.
+tls_cron_file() { echo "/etc/cron.d/drix-tls-$(printf '%s' "$PROJECT" | tr -c 'A-Za-z0-9_-' '_')"; }
+install_tls_renewal() {
+  [ -d /etc/cron.d ] && [ "$(id -u)" = 0 ] || return 0
+  local f
+  f="$(tls_cron_file)"
+  [ -f "$f" ] && grep -qF "$DIR/install.sh" "$f" && return 0
+  printf '# Drix Status (%s): renew the HTTPS certificate from its own certificate authority.\n%d %d * * 1 root %s renew-tls --dir %s --project %s >/dev/null 2>&1\n' \
+    "$PROJECT" $((RANDOM % 60)) $((RANDOM % 4 + 2)) "$DIR/install.sh" "$DIR" "$PROJECT" >"$f"
+  chmod 644 "$f"
+}
+
+do_renew_tls() {
+  [ -f "$ENV_FILE" ] || die "Not installed in $DIR yet."
+  require_root
+  load_env
+  own_ca || { ok "Nothing to renew: ${DRIX_TLS:+$DRIX_TLS certificates renew themselves}${DRIX_TLS:-this install uses plain ports}."; return; }
+  local names
+  names="$(cert_names)"
+  if local_cert_needed "$names"; then
+    issue_local_cert "$names"
+  else
+    ok "The certificate is fine until $(openssl x509 -in "$DIR/data/tls/fullchain.pem" -noout -enddate | cut -d= -f2)"
   fi
 }
 
 restart_envoy() {
-  if [ -n "$ENVOY_CHANGED" ] && [ -n "${DRIX_STATUS_DOMAIN:-}" ]; then dc restart envoy >/dev/null 2>&1; fi
+  if [ -n "$ENVOY_CHANGED" ] && tls_on; then dc restart envoy >/dev/null 2>&1; fi
 }
 
 wait_healthy() {
@@ -424,6 +601,9 @@ wait_healthy() {
   if [ -n "$DRIX_STATUS_DOMAIN" ]; then
     url="https://$DRIX_STATUS_DOMAIN:$HTTPS_PORT/healthz"
     curl_opts+=(-k --resolve "$DRIX_STATUS_DOMAIN:$HTTPS_PORT:127.0.0.1")
+  elif ip_tls; then
+    url="https://127.0.0.1:$HTTPS_PORT/healthz"
+    curl_opts+=(--cacert "$DIR/data/tls/ca.crt")
   fi
   local i bad
   for i in $(seq 1 90); do
@@ -445,7 +625,9 @@ wait_healthy() {
 # The server (user 10001 in its container) writes scheduled backups here too.
 prepare_backups() {
   mkdir -p "$DIR/backups"
-  chown 10001:10001 "$DIR/backups" 2>/dev/null || true
+  if ! chown 10001:10001 "$DIR/backups" 2>/dev/null && [ "$(stat -c %u "$DIR/backups" 2>/dev/null || echo 0)" != 10001 ]; then
+    warn "Couldn't hand $DIR/backups to the server (needs root), so nightly backups will fail. Fix: sudo chown 10001:10001 $DIR/backups"
+  fi
   chmod 750 "$DIR/backups"
 }
 
@@ -525,8 +707,14 @@ do_install() {
   install_deps
   fetch_code
   configure
-  if [ -n "$DRIX_STATUS_DOMAIN" ]; then check_ports "$HTTP_PORT" "$HTTPS_PORT"; else check_ports "$STATUS_PORT" "$ADMIN_PORT" "$API_PORT"; fi
-  if [ -n "$DRIX_STATUS_DOMAIN" ]; then setup_tls; fi
+  if [ -n "$DRIX_STATUS_DOMAIN" ]; then
+    check_ports "$HTTP_PORT" "$HTTPS_PORT"
+  elif ip_tls; then
+    check_ports "$HTTP_PORT" "$HTTPS_PORT" "$ADMIN_HTTPS_PORT" "$STATUS_PORT" "$ADMIN_PORT" "$API_PORT"
+  else
+    check_ports "$STATUS_PORT" "$ADMIN_PORT" "$API_PORT"
+  fi
+  if tls_on; then setup_tls; fi
   check_disk
   prepare_backups
   step "Building (first run takes a few minutes)"
@@ -551,8 +739,21 @@ do_install() {
   echo "  Next: open the admin panel → Workers → Add worker, and run the install command it shows on another server."
   if [ -n "$DRIX_STATUS_DOMAIN" ]; then
     echo "  Firewall: allow ports $HTTP_PORT and $HTTPS_PORT (e.g. ufw allow $HTTP_PORT,$HTTPS_PORT/tcp)."
+  elif ip_tls; then
+    echo "  Firewall: allow ports $HTTP_PORT, $HTTPS_PORT, $ADMIN_HTTPS_PORT and $API_PORT (e.g. ufw allow $HTTP_PORT,$HTTPS_PORT,$ADMIN_HTTPS_PORT,$API_PORT/tcp)."
+    local cport=""
+    if [ "$HTTP_PORT" != 80 ]; then cport=":$HTTP_PORT"; fi
+    echo
+    printf '  %sOn each phone or computer, trust this server once%s (for HTTPS and push notifications):\n' "$B" "$N"
+    echo "    1. Open http://$DRIX_HTTPS_HOST$cport/drix-ca.crt and allow the download."
+    echo "    2. iPhone: Settings → Profile Downloaded → Install, then Settings → General → About →"
+    echo "       Certificate Trust Settings → turn on \"Drix Status CA\"."
+    echo "       Mac: open the file, then in Keychain Access set it to Always Trust."
+    echo "    3. Open $ADMIN_URL/m in Safari and add it to the Home Screen for the phone app."
+    echo "  Passkeys need a real domain; on an IP address use an authenticator app for two-factor sign-in."
   else
-    echo "  Firewall: allow ports $STATUS_PORT, $ADMIN_PORT and $API_PORT, or put a proxy with HTTPS in front."
+    echo "  Firewall: allow ports $STATUS_PORT, $ADMIN_PORT and $API_PORT."
+    echo "  For HTTPS (needed for push notifications on phones) without a domain, run: sudo $DIR/install.sh --tls local"
   fi
   echo "  Update later with: sudo $DIR/install.sh update"
   echo "  The database is backed up every night to $DIR/backups (Settings → Backups)."
@@ -563,7 +764,7 @@ do_update() {
   require_root
   load_env
   fetch_code
-  if [ -n "${DRIX_STATUS_DOMAIN:-}" ]; then setup_tls; fi
+  if tls_on; then setup_tls; fi
   check_disk
   if postgres_running; then
     step "Backing up the database before updating"
@@ -596,6 +797,7 @@ do_uninstall() {
     dc down --remove-orphans
     ok "Stopped and removed containers. Data volumes are kept (use --purge to delete them)."
   fi
+  rm -f "$(tls_cron_file)" 2>/dev/null || true
 }
 
 # ---------- worker ----------
@@ -651,6 +853,7 @@ case "$CMD" in
   update) do_update ;;
   backup) do_backup ;;
   restore) do_restore ;;
+  renew-tls) do_renew_tls ;;
   worker) do_worker ;;
   status) load_env; dc ps ;;
   logs) load_env; dc logs --tail 100 -f ${LOG_SERVICE:+"$LOG_SERVICE"} ;;

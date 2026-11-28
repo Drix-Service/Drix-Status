@@ -340,7 +340,7 @@ function WorkerDialog({
   );
 }
 
-const INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/24-ghost-the-killer/Drix-Status/main/install.sh";
+const INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/drix-studio/drix-status/main/install.sh";
 
 function TokenDialog({ data, publicUrl, onClose }: { data: { agent: Agent; token: string; rotated?: boolean } | null; publicUrl: string; onClose: () => void }) {
   if (!data) return null;

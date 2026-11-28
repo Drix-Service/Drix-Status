@@ -99,7 +99,9 @@ export default function SettingsScreen() {
       <ListGroup
         header="Notifications"
         footer={
-          unavailable === "install"
+          unavailable === "insecure"
+            ? "Notifications need the admin on HTTPS. Ask whoever runs Drix to turn it on (install.sh --tls local works without a domain)."
+            : unavailable === "install"
             ? "On iPhone, notifications only work in the Home Screen app. In Safari, tap Share, then Add to Home Screen, and open Drix from there."
             : unavailable === "unsupported"
               ? "This browser doesn't support notifications."

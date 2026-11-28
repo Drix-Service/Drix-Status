@@ -14,6 +14,7 @@ import { TwoFactorSetupScreen } from "./components/TwoFactor";
 import { PageSkeleton } from "./components/Page";
 import { clearSavedCache } from "./lib/persist";
 import { lazyScreen } from "./lib/screen";
+import { desktopPath, isPhone, isStandalone } from "./lib/device";
 
 const Overview = lazy(() => import("./pages/Overview"));
 const Monitors = lazy(() => import("./pages/Monitors"));
@@ -30,10 +31,8 @@ const IncidentDetail = lazy(() => import("./pages/IncidentDetail"));
 /** The phone app; main.tsx loads it before the first render when it opens on /m. */
 export const MobileApp = lazyScreen(() => import("./mobile/MobileApp"));
 
-const isStandalone = () =>
-  window.matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
-
-/** The Home Screen app opens on the phone screens, unless "Open full admin" was chosen. */
+/** On a phone, the Home Screen app opens on the phone screens, unless
+ *  "Open full admin" was chosen. Macs, PCs and iPads stay on the full admin. */
 function StandaloneHome({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   let wantsFull = false;
@@ -42,7 +41,21 @@ function StandaloneHome({ children }: { children: React.ReactNode }) {
   } catch {
     /* ignore */
   }
-  if (location.pathname === "/" && isStandalone() && !wantsFull) return <Navigate to="/m" replace />;
+  if (location.pathname === "/" && isStandalone() && isPhone() && !wantsFull) return <Navigate to="/m" replace />;
+  return <>{children}</>;
+}
+
+/** Phone-app addresses (from notifications or bookmarks) open the matching
+ *  full-admin page on Macs, PCs and iPads. */
+function PhoneOnly({ children }: { children: React.ReactNode }) {
+  const { pathname, search, hash } = useLocation();
+  if (!isPhone()) {
+    const q = new URLSearchParams(search);
+    q.delete("phone");
+    const rest = q.toString();
+    const to = desktopPath(pathname);
+    return <Navigate to={`${to}${rest ? `?${rest}` : ""}${to.includes("#") ? "" : hash}`} replace />;
+  }
   return <>{children}</>;
 }
 
@@ -117,11 +130,13 @@ export function App() {
           <Route
             path="/m/*"
             element={
-              <AuthGate>
-                <Suspense fallback={null}>
-                  <MobileApp />
-                </Suspense>
-              </AuthGate>
+              <PhoneOnly>
+                <AuthGate>
+                  <Suspense fallback={null}>
+                    <MobileApp />
+                  </Suspense>
+                </AuthGate>
+              </PhoneOnly>
             }
           />
           <Route

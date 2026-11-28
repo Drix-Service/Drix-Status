@@ -1,0 +1,135 @@
+# Envoy front proxy for Drix Status on the server's IP address (no domains).
+# Rendered by install.sh when --tls local is used without domains. The sites
+# are told apart by port instead of by name:
+#
+#   :8080 (published as 80)    -> /drix-ca.crt, everything else redirects to HTTPS
+#   :8443 (published as 443)   -> status page:  /api -> server, rest -> status site
+#   :9443 (published as 8443)  -> admin panel:  /api -> server, rest -> admin site
+#
+# The certificate comes from Drix's own certificate authority (data/tls/ca.crt),
+# which phones trust once. It is loaded through SDS and reloaded automatically
+# when `install.sh renew-tls` replaces it.
+
+node: { id: drix-front, cluster: drix-front }
+
+static_resources:
+  listeners:
+    - name: http
+      address: { socket_address: { address: 0.0.0.0, port_value: 8080 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: http
+                route_config:
+                  virtual_hosts:
+                    - name: redirect
+                      domains: ["*"]
+                      routes:
+                        # Phones download the certificate authority here, before they trust it.
+                        - match: { path: "/drix-ca.crt" }
+                          direct_response: { status: 200, body: { filename: /etc/envoy/tls/ca.crt } }
+                          response_headers_to_add:
+                            - header: { key: Content-Type, value: application/x-x509-ca-cert }
+                        - match: { prefix: "/" }
+                          redirect: { https_redirect: true__PORT_REDIRECT__ }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router }
+
+    - name: status
+      address: { socket_address: { address: 0.0.0.0, port_value: 8443 } }
+      filter_chains:
+        - transport_socket: &tls
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                alpn_protocols: ["h2", "http/1.1"]
+                tls_params: { tls_minimum_protocol_version: TLSv1_2 }
+                tls_certificate_sds_secret_configs:
+                  - name: drix_cert
+                    sds_config:
+                      path_config_source:
+                        path: /etc/envoy/tls/sds.yaml
+                        watched_directory: { path: /etc/envoy/tls }
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: status
+                codec_type: AUTO
+                use_remote_address: true
+                upgrade_configs: [{ upgrade_type: websocket }]
+                stream_idle_timeout: 300s
+                common_http_protocol_options: { idle_timeout: 3600s }
+                route_config:
+                  virtual_hosts:
+                    - name: status
+                      domains: ["*"]
+                      routes:
+                        - match: { path: "/drix-ca.crt" }
+                          direct_response: { status: 200, body: { filename: /etc/envoy/tls/ca.crt } }
+                          response_headers_to_add:
+                            - header: { key: Content-Type, value: application/x-x509-ca-cert }
+                        - match: { prefix: "/api/" }
+                          route: { cluster: server, timeout: 0s }
+                        - match: { prefix: "/healthz" }
+                          route: { cluster: server }
+                        - match: { prefix: "/" }
+                          route: { cluster: status_web }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router }
+
+    - name: admin
+      address: { socket_address: { address: 0.0.0.0, port_value: 9443 } }
+      filter_chains:
+        - transport_socket: *tls
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: admin
+                codec_type: AUTO
+                use_remote_address: true
+                upgrade_configs: [{ upgrade_type: websocket }]
+                stream_idle_timeout: 300s
+                common_http_protocol_options: { idle_timeout: 3600s }
+                route_config:
+                  virtual_hosts:
+                    - name: admin
+                      domains: ["*"]
+                      routes:
+                        - match: { path: "/drix-ca.crt" }
+                          direct_response: { status: 200, body: { filename: /etc/envoy/tls/ca.crt } }
+                          response_headers_to_add:
+                            - header: { key: Content-Type, value: application/x-x509-ca-cert }
+                        - match: { prefix: "/api/" }
+                          route: { cluster: server, timeout: 0s }
+                        - match: { prefix: "/" }
+                          route: { cluster: admin_web }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router }
+
+  clusters:
+    - name: server
+      type: STRICT_DNS
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: server
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: server, port_value: 8080 } } } }] }]
+    - name: status_web
+      type: STRICT_DNS
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: status_web
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: status-web, port_value: 80 } } } }] }]
+    - name: admin_web
+      type: STRICT_DNS
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: admin_web
+        endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: { address: admin-web, port_value: 80 } } } }] }]

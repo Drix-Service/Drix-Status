@@ -193,9 +193,19 @@ Everyone can turn it on under **Settings → Two-factor sign-in**. Signing in th
 Five wrong codes end a sign-in attempt, and the usual login rate limit also applies. Turning a method on or off, using a recovery code and resets all appear in the audit log.
 - **Audit log:** **Team → Audit log** records who changed what, and from where.
 
-## iPhone app
+## Apps for phone and computer
 
-The admin site doubles as a phone app. On an iPhone, open your admin address in Safari, tap **Share → Add to Home Screen**, and open **Drix** from the Home Screen. It opens full screen on its own screens (`/m`), and they update live:
+The admin site can be installed as an app. Each device gets the screens made for it:
+
+- **iPhone / Android phone:** open your admin address in Safari (or Chrome), tap **Share → Add to Home Screen**, and open **Drix** from the Home Screen. It opens full screen on the phone screens (`/m`).
+- **Mac, PC or iPad:** install it the usual way, and it opens the full admin in its own window with a Dock or taskbar icon.
+  - On a Mac: Safari → File → **Add to Dock**.
+  - In Chrome or Edge: the **Install** icon in the address bar.
+
+  Notifications for that computer are under **Settings → Notifications on this device**.
+- **Links between them:** phone-app links on a computer (for example from a notification) open the matching full-admin page. To try the phone screens on a computer, open `/m?phone`.
+
+The phone screens update live:
 
 - **Status:** what's down or degraded first, then every group with response times.
 - **Monitor:** status, response-time chart and recent changes, with **Pause/Resume**, **Maintenance** (starts now for 15 minutes to 4 hours, pausing alerts) and **Incident**.
@@ -248,7 +258,7 @@ Agent variables: `DRIX_SERVER_URL`, `DRIX_AGENT_TOKEN`, `DRIX_MAX_CONCURRENCY` (
 On a Linux server (Debian or Ubuntu; other distros need Docker already installed):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/24-ghost-the-killer/Drix-Status/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/drix-studio/drix-status/main/install.sh | sudo bash
 ```
 
 The installer:
@@ -258,7 +268,7 @@ The installer:
 4. builds and starts everything, set to restart on boot.
 
 It asks for:
-- **Two domains**, e.g. `status.example.com` and `admin.example.com`, both pointing at the server. Envoy then serves the two sites over HTTPS, with free Let's Encrypt certificates that renew themselves. Leave the domains empty to serve on plain ports (3000, 3001, 8080) behind your own proxy instead.
+- **Two domains**, e.g. `status.example.com` and `admin.example.com`, both pointing at the server. Envoy then serves the two sites over HTTPS, with free Let's Encrypt certificates that renew themselves. Leave the domains empty to use the server's IP address instead. It then asks whether to serve HTTPS there with Drix's own certificate (see below), or plain ports only (3000, 3001, 8080).
 - **The admin login.** Leave the password empty and one is generated and shown once.
 - **An SMTP URL** (optional) for email.
 
@@ -267,7 +277,7 @@ Settings are saved in `/opt/drix/.env` (readable by root only). Database passwor
 **Add workers** in the admin panel under **Workers → Add worker**. It shows a command to run on each machine that should run checks:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/24-ghost-the-killer/Drix-Status/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/drix-studio/drix-status/main/install.sh \
   | sudo bash -s -- worker --server https://status.example.com --token drx_...
 ```
 
@@ -277,6 +287,7 @@ curl -fsSL https://raw.githubusercontent.com/24-ghost-the-killer/Drix-Status/mai
 sudo /opt/drix/install.sh update        # back up the database, pull the latest code and rebuild
 sudo /opt/drix/install.sh backup        # back up the database now
 sudo /opt/drix/install.sh restore FILE  # replace the database with a backup (asks first)
+sudo /opt/drix/install.sh renew-tls     # renew the certificate from Drix's own CA now (also weekly from cron)
 sudo /opt/drix/install.sh status        # container status
 sudo /opt/drix/install.sh logs server   # follow a service's logs (server, envoy, certbot, …)
 sudo /opt/drix/install.sh uninstall     # stop; keeps the data (--purge deletes it)
@@ -284,7 +295,7 @@ sudo /opt/drix/install.sh uninstall     # stop; keeps the data (--purge deletes 
 
 **Options:** every question has a flag, so the installer can run without prompts, e.g. `--status-domain … --admin-domain … --email … --admin-email … --yes`. Other useful flags:
 - `--staging` uses Let's Encrypt test certificates while you try things out. To switch to a real certificate afterwards, set `DRIX_LE_STAGING=''` in `/opt/drix/.env` and run `sudo /opt/drix/install.sh update`; the test certificate is replaced automatically.
-- `--tls self-signed` is for internal networks.
+- `--tls local` gives HTTPS without a domain, or with domains that Let's Encrypt can't reach. It uses Drix's own certificate authority (see below). `--tls self-signed` does the same.
 - `--branch` installs a different branch.
 
 See `install.sh --help` for the full list.
@@ -296,9 +307,37 @@ See `install.sh --help` for the full list.
 | `deploy/docker-compose.prod.yml` | Postgres, Redis, server and both sites |
 | `deploy/docker-compose.tls.yml` | Envoy and certbot (used with domains) |
 | `deploy/docker-compose.ports.yml` | Plain ports (used without domains) |
+| `deploy/docker-compose.tls-ip.yml` | The admin panel's HTTPS port for `--tls local` without domains |
+| `deploy/envoy/envoy-ip.yaml.tmpl` | Envoy config for HTTPS on the IP address (one port per site) |
 | `deploy/envoy/envoy.yaml.tmpl` | Envoy config template, rendered to `data/envoy.yaml` |
 
 Envoy sends `/api` on both domains to the server, including the workers' WebSocket and the live-update streams, and everything else to the matching site. It reloads renewed certificates without restarting.
+
+### HTTPS without a domain
+
+Phones only allow push notifications, the installable app's offline start and passkeys over HTTPS. If the server has no domain, for example on a school or office network or only reachable through a VPN such as Twingate, use:
+
+```bash
+sudo /opt/drix/install.sh --tls local      # also converts an existing plain install
+```
+
+- **Drix makes its own certificate authority** (`/opt/drix/data/tls/ca.crt`, valid 10 years) and a certificate for every address of the server.
+- **Addresses:**
+
+  | Address | What |
+  |---|---|
+  | `https://<ip>` (`--https-port`, default 443) | Status page |
+  | `https://<ip>:8443` (`--admin-https-port`) | Admin panel and phone app |
+  | `http://<ip>/drix-ca.crt` | The certificate authority, for devices to download |
+
+  The plain ports (3000, 3001, 8080) keep working, and workers keep connecting to `http://<ip>:8080`.
+- **Each device trusts the certificate authority once:**
+  1. Open `http://<ip>/drix-ca.crt` and allow the download.
+  2. On an iPhone, go to Settings → Profile Downloaded → Install, then Settings → General → About → Certificate Trust Settings and turn on **Drix Status CA**. On a Mac, open the file and set it to *Always Trust* in Keychain Access.
+  3. On the iPhone, open `https://<ip>:8443/m` in Safari and add it to the Home Screen.
+- **Renewal:** the server certificate lasts 397 days, the longest Apple devices accept. It's renewed automatically: weekly from cron (`renew-tls`) and on every `update`. Devices don't need to do anything again.
+- **Passkeys don't work on a bare IP address.** Use an authenticator app for two-factor sign-in, or give the server a domain.
+- **Keep it private:** `/opt/drix/data/tls/ca.key` is the authority's private key. Anyone holding it could make certificates that your devices trust.
 
 ### Backups
 

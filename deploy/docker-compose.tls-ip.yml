@@ -1,0 +1,7 @@
+# HTTPS on the server's IP address (install.sh --tls local, no domains).
+# Used together with docker-compose.ports.yml (plain ports keep working, and
+# workers connect to the API port) and docker-compose.tls.yml (Envoy).
+# The status page is on HTTPS_PORT (443); this adds the admin panel's port.
+services:
+  envoy:
+    ports: ["${ADMIN_HTTPS_PORT:-8443}:9443"]

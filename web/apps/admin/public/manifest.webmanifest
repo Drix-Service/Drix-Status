@@ -3,10 +3,9 @@
   "short_name": "Drix",
   "description": "Status, alerts and incidents for your Drix monitors.",
   "id": "/m",
-  "start_url": "/m",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "orientation": "portrait",
   "background_color": "#0a0a0a",
   "theme_color": "#0a0a0a",
   "icons": [

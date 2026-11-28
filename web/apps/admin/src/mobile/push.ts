@@ -4,7 +4,9 @@ export type PushDevice = { id: number; endpoint: string; events: string[]; devic
 export type PushInfo = { public_key: string; events: string[]; devices: PushDevice[]; error?: string };
 
 /** Why this browser can't do push, or null when it can. */
-export function pushUnavailable(): "install" | "unsupported" | null {
+export function pushUnavailable(): "insecure" | "install" | "unsupported" | null {
+  // Browsers only allow push (and the service worker) over HTTPS.
+  if (!window.isSecureContext) return "insecure";
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
   const standalone = window.matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
   if (ios && !standalone) return "install"; // iOS only allows push for Home Screen apps
